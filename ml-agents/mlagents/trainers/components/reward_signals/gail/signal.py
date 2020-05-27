@@ -1,51 +1,37 @@
-from typing import Any, Dict, List
-import logging
+from typing import Any, Dict
 import numpy as np
 from mlagents.tf_utils import tf
 
 from mlagents.trainers.components.reward_signals import RewardSignal, RewardSignalResult
-from mlagents.trainers.tf_policy import TFPolicy
-from mlagents.trainers.models import LearningModel
+from mlagents.trainers.policy.tf_policy import TFPolicy
 from .model import GAILModel
 from mlagents.trainers.demo_loader import demo_to_buffer
-
-LOGGER = logging.getLogger("mlagents.trainers")
+from mlagents.trainers.buffer import AgentBuffer
+from mlagents.trainers.settings import GAILSettings
 
 
 class GAILRewardSignal(RewardSignal):
-    def __init__(
-        self,
-        policy: TFPolicy,
-        policy_model: LearningModel,
-        strength: float,
-        gamma: float,
-        demo_path: str,
-        encoding_size: int = 64,
-        learning_rate: float = 3e-4,
-        use_actions: bool = False,
-        use_vail: bool = False,
-    ):
+    def __init__(self, policy: TFPolicy, settings: GAILSettings):
         """
         The GAIL Reward signal generator. https://arxiv.org/abs/1606.03476
         :param policy: The policy of the learning model
-        :param strength: The scaling parameter for the reward. The scaled reward will be the unscaled
-        reward multiplied by the strength parameter
-        :param gamma: The time discounting factor used for this reward.
-        :param demo_path: The path to the demonstration file
-        :param num_epoch: The number of epochs to train over the training buffer for the discriminator.
-        :param encoding_size: The size of the the hidden layers of the discriminator
-        :param learning_rate: The Learning Rate used during GAIL updates.
-        :param use_actions: Whether or not to use the actions for the discriminator.
-        :param use_vail: Whether or not to use a variational bottleneck for the discriminator.
+        :param settings: The settings for this GAILRewardSignal.
         See https://arxiv.org/abs/1810.00821.
         """
-        super().__init__(policy, policy_model, strength, gamma)
+        super().__init__(policy, settings)
         self.use_terminal_states = False
 
         self.model = GAILModel(
-            policy.model, 128, learning_rate, encoding_size, use_actions, use_vail
+            policy,
+            128,
+            settings.learning_rate,
+            settings.encoding_size,
+            settings.use_actions,
+            settings.use_vail,
         )
-        _, self.demonstration_buffer = demo_to_buffer(demo_path, policy.sequence_length)
+        _, self.demonstration_buffer = demo_to_buffer(
+            settings.demo_path, policy.sequence_length, policy.brain
+        )
         self.has_updated = False
         self.update_dict: Dict[str, tf.Tensor] = {
             "gail_loss": self.model.loss,
@@ -66,25 +52,25 @@ class GAILRewardSignal(RewardSignal):
             "Policy/GAIL Expert Estimate": "gail_expert_estimate",
         }
 
-    def evaluate_batch(self, mini_batch: Dict[str, np.array]) -> RewardSignalResult:
+    def evaluate_batch(self, mini_batch: AgentBuffer) -> RewardSignalResult:
         feed_dict: Dict[tf.Tensor, Any] = {
-            self.policy.model.batch_size: len(mini_batch["actions"]),
-            self.policy.model.sequence_length: self.policy.sequence_length,
+            self.policy.batch_size_ph: len(mini_batch["actions"]),
+            self.policy.sequence_length_ph: self.policy.sequence_length,
         }
         if self.model.use_vail:
             feed_dict[self.model.use_noise] = [0]
 
         if self.policy.use_vec_obs:
-            feed_dict[self.policy.model.vector_in] = mini_batch["vector_obs"]
-        if self.policy.model.vis_obs_size > 0:
-            for i in range(len(self.policy.model.visual_in)):
+            feed_dict[self.policy.vector_in] = mini_batch["vector_obs"]
+        if self.policy.vis_obs_size > 0:
+            for i in range(len(self.policy.visual_in)):
                 _obs = mini_batch["visual_obs%d" % i]
-                feed_dict[self.policy.model.visual_in[i]] = _obs
+                feed_dict[self.policy.visual_in[i]] = _obs
 
         if self.policy.use_continuous_act:
-            feed_dict[self.policy.model.selected_actions] = mini_batch["actions"]
+            feed_dict[self.policy.selected_actions] = mini_batch["actions"]
         else:
-            feed_dict[self.policy.model.action_holder] = mini_batch["actions"]
+            feed_dict[self.policy.output] = mini_batch["actions"]
         feed_dict[self.model.done_policy_holder] = np.array(
             mini_batch["done"]
         ).flatten()
@@ -94,39 +80,19 @@ class GAILRewardSignal(RewardSignal):
         scaled_reward = unscaled_reward * float(self.has_updated) * self.strength
         return RewardSignalResult(scaled_reward, unscaled_reward)
 
-    @classmethod
-    def check_config(
-        cls, config_dict: Dict[str, Any], param_keys: List[str] = None
-    ) -> None:
-        """
-        Checks the config and throw an exception if a hyperparameter is missing. GAIL requires strength and gamma
-        at minimum.
-        """
-        param_keys = ["strength", "gamma", "demo_path"]
-        super().check_config(config_dict, param_keys)
-
     def prepare_update(
-        self,
-        policy_model: LearningModel,
-        mini_batch: Dict[str, np.ndarray],
-        num_sequences: int,
+        self, policy: TFPolicy, mini_batch: AgentBuffer, num_sequences: int
     ) -> Dict[tf.Tensor, Any]:
         """
-        Prepare inputs for update. .
-        :param mini_batch_demo: A mini batch of expert trajectories
-        :param mini_batch_policy: A mini batch of trajectories sampled from the current policy
+        Prepare inputs for update.
+        :param policy: The policy learning from GAIL signal
+        :param mini_batch: A mini batch from trajectories sampled from the current policy
+        :param num_sequences: Number of samples in batch
         :return: Feed_dict for update process.
         """
-        max_num_experiences = min(
-            len(mini_batch["actions"]), self.demonstration_buffer.num_experiences
-        )
-        # If num_sequences is less, we need to shorten the input batch.
-        for key, element in mini_batch.items():
-            mini_batch[key] = element[:max_num_experiences]
-
-        # Get batch from demo buffer
+        # Get batch from demo buffer. Even if demo buffer is smaller, we sample with replacement
         mini_batch_demo = self.demonstration_buffer.sample_mini_batch(
-            len(mini_batch["actions"]), 1
+            mini_batch.num_experiences, 1
         )
 
         feed_dict: Dict[tf.Tensor, Any] = {
@@ -139,18 +105,18 @@ class GAILRewardSignal(RewardSignal):
 
         feed_dict[self.model.action_in_expert] = np.array(mini_batch_demo["actions"])
         if self.policy.use_continuous_act:
-            feed_dict[policy_model.selected_actions] = mini_batch["actions"]
+            feed_dict[policy.selected_actions] = mini_batch["actions"]
         else:
-            feed_dict[policy_model.action_holder] = mini_batch["actions"]
+            feed_dict[policy.output] = mini_batch["actions"]
 
         if self.policy.use_vis_obs > 0:
-            for i in range(len(policy_model.visual_in)):
-                feed_dict[policy_model.visual_in[i]] = mini_batch["visual_obs%d" % i]
+            for i in range(len(policy.visual_in)):
+                feed_dict[policy.visual_in[i]] = mini_batch["visual_obs%d" % i]
                 feed_dict[self.model.expert_visual_in[i]] = mini_batch_demo[
                     "visual_obs%d" % i
                 ]
         if self.policy.use_vec_obs:
-            feed_dict[policy_model.vector_in] = mini_batch["vector_obs"]
+            feed_dict[policy.vector_in] = mini_batch["vector_obs"]
             feed_dict[self.model.obs_in_expert] = mini_batch_demo["vector_obs"]
         self.has_updated = True
         return feed_dict

@@ -2,15 +2,17 @@ using NUnit.Framework;
 using UnityEngine;
 using System.IO.Abstractions.TestingHelpers;
 using System.Reflection;
-using MLAgents.CommunicatorObjects;
-using MLAgents.Sensor;
+using Unity.MLAgents.CommunicatorObjects;
+using Unity.MLAgents.Sensors;
+using Unity.MLAgents.Demonstrations;
+using Unity.MLAgents.Policies;
 
-namespace MLAgents.Tests
+namespace Unity.MLAgents.Tests
 {
     [TestFixture]
-    public class DemonstrationTests : MonoBehaviour
+    public class DemonstrationTests
     {
-        const string k_DemoDirecory = "Assets/Demonstrations/";
+        const string k_DemoDirectory = "Assets/Demonstrations/";
         const string k_ExtensionType = ".demo";
         const string k_DemoName = "Test";
 
@@ -34,49 +36,62 @@ namespace MLAgents.Tests
         }
 
         [Test]
-        public void TestStoreInitalize()
+        public void TestStoreInitialize()
         {
             var fileSystem = new MockFileSystem();
-            var demoStore = new DemonstrationStore(fileSystem);
 
-            Assert.IsFalse(fileSystem.Directory.Exists(k_DemoDirecory));
+            var gameobj = new GameObject("gameObj");
 
-            var brainParameters = new BrainParameters
-            {
-                vectorObservationSize = 3,
-                numStackedVectorObservations = 2,
-                vectorActionDescriptions = new[] { "TestActionA", "TestActionB" },
-                vectorActionSize = new[] { 2, 2 },
-                vectorActionSpaceType = SpaceType.Discrete
-            };
+            var bp = gameobj.AddComponent<BehaviorParameters>();
+            bp.BrainParameters.VectorObservationSize = 3;
+            bp.BrainParameters.NumStackedVectorObservations = 2;
+            bp.BrainParameters.VectorActionDescriptions = new[] { "TestActionA", "TestActionB" };
+            bp.BrainParameters.VectorActionSize = new[] { 2, 2 };
+            bp.BrainParameters.VectorActionSpaceType = SpaceType.Discrete;
 
-            demoStore.Initialize(k_DemoName, brainParameters, "TestBrain");
+            gameobj.AddComponent<TestAgent>();
 
-            Assert.IsTrue(fileSystem.Directory.Exists(k_DemoDirecory));
-            Assert.IsTrue(fileSystem.FileExists(k_DemoDirecory + k_DemoName + k_ExtensionType));
+            Assert.IsFalse(fileSystem.Directory.Exists(k_DemoDirectory));
+
+            var demoRec = gameobj.AddComponent<DemonstrationRecorder>();
+            demoRec.Record = true;
+            demoRec.DemonstrationName = k_DemoName;
+            demoRec.DemonstrationDirectory = k_DemoDirectory;
+            var demoWriter = demoRec.LazyInitialize(fileSystem);
+
+            Assert.IsTrue(fileSystem.Directory.Exists(k_DemoDirectory));
+            Assert.IsTrue(fileSystem.FileExists(k_DemoDirectory + k_DemoName + k_ExtensionType));
 
             var agentInfo = new AgentInfo
             {
                 reward = 1f,
-                actionMasks = new[] { false, true },
+                discreteActionMasks = new[] { false, true },
                 done = true,
                 episodeId = 5,
                 maxStepReached = true,
                 storedVectorActions = new[] { 0f, 1f },
             };
 
-            demoStore.Record(agentInfo, new System.Collections.Generic.List<ISensor>());
-            demoStore.Close();
+
+            demoWriter.Record(agentInfo, new System.Collections.Generic.List<ISensor>());
+            demoRec.Close();
+
+            // Make sure close can be called multiple times
+            demoWriter.Close();
+            demoRec.Close();
+
+            // Make sure trying to write after closing doesn't raise an error.
+            demoWriter.Record(agentInfo, new System.Collections.Generic.List<ISensor>());
         }
 
         public class ObservationAgent : TestAgent
         {
-            public override void CollectObservations()
+            public override void CollectObservations(VectorSensor sensor)
             {
                 collectObservationsCalls += 1;
-                AddVectorObs(1f);
-                AddVectorObs(2f);
-                AddVectorObs(3f);
+                sensor.AddObservation(1f);
+                sensor.AddObservation(2f);
+                sensor.AddObservation(3f);
             }
         }
 
@@ -85,11 +100,11 @@ namespace MLAgents.Tests
         {
             var agentGo1 = new GameObject("TestAgent");
             var bpA = agentGo1.AddComponent<BehaviorParameters>();
-            bpA.brainParameters.vectorObservationSize = 3;
-            bpA.brainParameters.numStackedVectorObservations = 1;
-            bpA.brainParameters.vectorActionDescriptions = new[] { "TestActionA", "TestActionB" };
-            bpA.brainParameters.vectorActionSize = new[] { 2, 2 };
-            bpA.brainParameters.vectorActionSpaceType = SpaceType.Discrete;
+            bpA.BrainParameters.VectorObservationSize = 3;
+            bpA.BrainParameters.NumStackedVectorObservations = 1;
+            bpA.BrainParameters.VectorActionDescriptions = new[] { "TestActionA", "TestActionB" };
+            bpA.BrainParameters.VectorActionSize = new[] { 2, 2 };
+            bpA.BrainParameters.VectorActionSpaceType = SpaceType.Discrete;
 
             agentGo1.AddComponent<ObservationAgent>();
             var agent1 = agentGo1.GetComponent<ObservationAgent>();
@@ -97,9 +112,10 @@ namespace MLAgents.Tests
             agentGo1.AddComponent<DemonstrationRecorder>();
             var demoRecorder = agentGo1.GetComponent<DemonstrationRecorder>();
             var fileSystem = new MockFileSystem();
-            demoRecorder.demonstrationName = "TestBrain";
-            demoRecorder.record = true;
-            demoRecorder.InitializeDemoStore(fileSystem);
+            demoRecorder.DemonstrationDirectory = k_DemoDirectory;
+            demoRecorder.DemonstrationName = "TestBrain";
+            demoRecorder.Record = true;
+            demoRecorder.LazyInitialize(fileSystem);
 
             var agentEnableMethod = typeof(Agent).GetMethod("OnEnable",
                 BindingFlags.Instance | BindingFlags.NonPublic);
@@ -116,14 +132,14 @@ namespace MLAgents.Tests
 
             // Read back the demo file and make sure observations were written
             var reader = fileSystem.File.OpenRead("Assets/Demonstrations/TestBrain.demo");
-            reader.Seek(DemonstrationStore.MetaDataBytes + 1, 0);
+            reader.Seek(DemonstrationWriter.MetaDataBytes + 1, 0);
             BrainParametersProto.Parser.ParseDelimitedFrom(reader);
 
             var agentInfoProto = AgentInfoActionPairProto.Parser.ParseDelimitedFrom(reader).AgentInfo;
             var obs = agentInfoProto.Observations[2]; // skip dummy sensors
             {
                 var vecObs = obs.FloatData.Data;
-                Assert.AreEqual(bpA.brainParameters.vectorObservationSize, vecObs.Count);
+                Assert.AreEqual(bpA.BrainParameters.VectorObservationSize, vecObs.Count);
                 for (var i = 0; i < vecObs.Count; i++)
                 {
                     Assert.AreEqual((float)i + 1, vecObs[i]);

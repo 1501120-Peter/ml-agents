@@ -1,8 +1,3 @@
-import logging
-
-logger = logging.getLogger("mlagents_envs")
-
-
 class UnityException(Exception):
     """
     Any error related to ml-agents environment.
@@ -27,6 +22,14 @@ class UnityCommunicationException(UnityException):
     pass
 
 
+class UnityCommunicatorStoppedException(UnityException):
+    """
+    Raised when communicator has stopped gracefully.
+    """
+
+    pass
+
+
 class UnityObservationException(UnityException):
     """
     Related to errors with receiving observations.
@@ -46,6 +49,14 @@ class UnityActionException(UnityException):
 class UnityTimeOutException(UnityException):
     """
     Related to errors with communication timeouts.
+    """
+
+    pass
+
+
+class UnitySideChannelException(UnityException):
+    """
+    Related to errors with side channels.
     """
 
     pass

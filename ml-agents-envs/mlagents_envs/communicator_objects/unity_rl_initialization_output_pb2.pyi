@@ -16,6 +16,10 @@ from mlagents_envs.communicator_objects.brain_parameters_pb2 import (
     BrainParametersProto as mlagents_envs___communicator_objects___brain_parameters_pb2___BrainParametersProto,
 )
 
+from mlagents_envs.communicator_objects.capabilities_pb2 import (
+    UnityRLCapabilitiesProto as mlagents_envs___communicator_objects___capabilities_pb2___UnityRLCapabilitiesProto,
+)
+
 from typing import (
     Iterable as typing___Iterable,
     Optional as typing___Optional,
@@ -36,24 +40,32 @@ builtin___int = int
 class UnityRLInitializationOutputProto(google___protobuf___message___Message):
     DESCRIPTOR: google___protobuf___descriptor___Descriptor = ...
     name = ... # type: typing___Text
-    version = ... # type: typing___Text
+    communication_version = ... # type: typing___Text
     log_path = ... # type: typing___Text
+    package_version = ... # type: typing___Text
 
     @property
     def brain_parameters(self) -> google___protobuf___internal___containers___RepeatedCompositeFieldContainer[mlagents_envs___communicator_objects___brain_parameters_pb2___BrainParametersProto]: ...
 
+    @property
+    def capabilities(self) -> mlagents_envs___communicator_objects___capabilities_pb2___UnityRLCapabilitiesProto: ...
+
     def __init__(self,
         *,
         name : typing___Optional[typing___Text] = None,
-        version : typing___Optional[typing___Text] = None,
+        communication_version : typing___Optional[typing___Text] = None,
         log_path : typing___Optional[typing___Text] = None,
         brain_parameters : typing___Optional[typing___Iterable[mlagents_envs___communicator_objects___brain_parameters_pb2___BrainParametersProto]] = None,
+        package_version : typing___Optional[typing___Text] = None,
+        capabilities : typing___Optional[mlagents_envs___communicator_objects___capabilities_pb2___UnityRLCapabilitiesProto] = None,
         ) -> None: ...
     @classmethod
     def FromString(cls, s: builtin___bytes) -> UnityRLInitializationOutputProto: ...
     def MergeFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
     def CopyFrom(self, other_msg: google___protobuf___message___Message) -> None: ...
     if sys.version_info >= (3,):
-        def ClearField(self, field_name: typing_extensions___Literal[u"brain_parameters",u"log_path",u"name",u"version"]) -> None: ...
+        def HasField(self, field_name: typing_extensions___Literal[u"capabilities"]) -> builtin___bool: ...
+        def ClearField(self, field_name: typing_extensions___Literal[u"brain_parameters",u"capabilities",u"communication_version",u"log_path",u"name",u"package_version"]) -> None: ...
     else:
-        def ClearField(self, field_name: typing_extensions___Literal[u"brain_parameters",b"brain_parameters",u"log_path",b"log_path",u"name",b"name",u"version",b"version"]) -> None: ...
+        def HasField(self, field_name: typing_extensions___Literal[u"capabilities",b"capabilities"]) -> builtin___bool: ...
+        def ClearField(self, field_name: typing_extensions___Literal[u"brain_parameters",b"brain_parameters",u"capabilities",b"capabilities",u"communication_version",b"communication_version",u"log_path",b"log_path",u"name",b"name",u"package_version",b"package_version"]) -> None: ...

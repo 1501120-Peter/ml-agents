@@ -1,89 +1,46 @@
 import pytest
-import yaml
+import copy
 import os
 import mlagents.trainers.tests.mock_brain as mb
-from mlagents.trainers.ppo.policy import PPOPolicy
-from mlagents.trainers.sac.policy import SACPolicy
+from mlagents.trainers.policy.nn_policy import NNPolicy
+from mlagents.trainers.sac.optimizer import SACOptimizer
+from mlagents.trainers.ppo.optimizer import PPOOptimizer
+from mlagents.trainers.tests.test_simple_rl import PPO_CONFIG, SAC_CONFIG
+from mlagents.trainers.settings import (
+    GAILSettings,
+    CuriositySettings,
+    RewardSignalSettings,
+    BehavioralCloningSettings,
+    NetworkSettings,
+    TrainerType,
+    RewardSignalType,
+)
+
+CONTINUOUS_PATH = os.path.dirname(os.path.abspath(__file__)) + "/test.demo"
+DISCRETE_PATH = os.path.dirname(os.path.abspath(__file__)) + "/testdcvis.demo"
 
 
 def ppo_dummy_config():
-    return yaml.safe_load(
-        """
-        trainer: ppo
-        batch_size: 32
-        beta: 5.0e-3
-        buffer_size: 512
-        epsilon: 0.2
-        hidden_units: 128
-        lambd: 0.95
-        learning_rate: 3.0e-4
-        max_steps: 5.0e4
-        normalize: true
-        num_epoch: 5
-        num_layers: 2
-        time_horizon: 64
-        sequence_length: 64
-        summary_freq: 1000
-        use_recurrent: false
-        memory_size: 8
-        reward_signals:
-          extrinsic:
-            strength: 1.0
-            gamma: 0.99
-        """
-    )
+    return copy.deepcopy(PPO_CONFIG)
 
 
 def sac_dummy_config():
-    return yaml.safe_load(
-        """
-        trainer: sac
-        batch_size: 128
-        buffer_size: 50000
-        buffer_init_steps: 0
-        hidden_units: 128
-        init_entcoef: 1.0
-        learning_rate: 3.0e-4
-        max_steps: 5.0e4
-        memory_size: 256
-        normalize: false
-        num_update: 1
-        train_interval: 1
-        num_layers: 2
-        time_horizon: 64
-        sequence_length: 64
-        summary_freq: 1000
-        tau: 0.005
-        use_recurrent: false
-        vis_encode_type: simple
-        behavioral_cloning:
-            demo_path: ./Project/Assets/ML-Agents/Examples/Pyramids/Demos/ExpertPyramid.demo
-            strength: 1.0
-            steps: 10000000
-        reward_signals:
-            extrinsic:
-                strength: 1.0
-                gamma: 0.99
-        """
-    )
+    return copy.deepcopy(SAC_CONFIG)
 
 
 @pytest.fixture
 def gail_dummy_config():
-    return {
-        "gail": {
-            "strength": 0.1,
-            "gamma": 0.9,
-            "encoding_size": 128,
-            "use_vail": True,
-            "demo_path": os.path.dirname(os.path.abspath(__file__)) + "/test.demo",
-        }
-    }
+    return {RewardSignalType.GAIL: GAILSettings(demo_path=CONTINUOUS_PATH)}
 
 
 @pytest.fixture
 def curiosity_dummy_config():
-    return {"curiosity": {"strength": 0.1, "gamma": 0.9, "encoding_size": 128}}
+    return {RewardSignalType.CURIOSITY: CuriositySettings()}
+
+
+@pytest.fixture
+def extrinsic_dummy_config():
+    return {RewardSignalType.EXTRINSIC: RewardSignalSettings()}
 
 
 VECTOR_ACTION_SPACE = [2]
@@ -94,7 +51,7 @@ BATCH_SIZE = 12
 NUM_AGENTS = 12
 
 
-def create_policy_mock(
+def create_optimizer_mock(
     trainer_config, reward_signal_config, use_rnn, use_discrete, use_visual
 ):
     mock_brain = mb.setup_mock_brain(
@@ -104,35 +61,38 @@ def create_policy_mock(
         vector_obs_space=VECTOR_OBS_SPACE,
         discrete_action_space=DISCRETE_ACTION_SPACE,
     )
-
-    trainer_parameters = trainer_config
-    model_path = "testpath"
-    trainer_parameters["model_path"] = model_path
-    trainer_parameters["keep_checkpoints"] = 3
-    trainer_parameters["reward_signals"].update(reward_signal_config)
-    trainer_parameters["use_recurrent"] = use_rnn
-    if trainer_config["trainer"] == "ppo":
-        policy = PPOPolicy(0, mock_brain, trainer_parameters, False, False)
+    trainer_settings = trainer_config
+    trainer_settings.reward_signals = reward_signal_config
+    trainer_settings.network_settings.memory = (
+        NetworkSettings.MemorySettings(sequence_length=16, memory_size=10)
+        if use_rnn
+        else None
+    )
+    policy = NNPolicy(
+        0, mock_brain, trainer_settings, False, False, create_tf_graph=False
+    )
+    if trainer_settings.trainer_type == TrainerType.SAC:
+        optimizer = SACOptimizer(policy, trainer_settings)
     else:
-        policy = SACPolicy(0, mock_brain, trainer_parameters, False, False)
-    return policy
+        optimizer = PPOOptimizer(policy, trainer_settings)
+    return optimizer
 
 
-def reward_signal_eval(policy, reward_signal_name):
-    buffer = mb.simulate_rollout(BATCH_SIZE, policy.brain)
+def reward_signal_eval(optimizer, reward_signal_name):
+    buffer = mb.simulate_rollout(BATCH_SIZE, optimizer.policy.brain)
     # Test evaluate
-    rsig_result = policy.reward_signals[reward_signal_name].evaluate_batch(buffer)
+    rsig_result = optimizer.reward_signals[reward_signal_name].evaluate_batch(buffer)
     assert rsig_result.scaled_reward.shape == (BATCH_SIZE,)
     assert rsig_result.unscaled_reward.shape == (BATCH_SIZE,)
 
 
-def reward_signal_update(policy, reward_signal_name):
-    buffer = mb.simulate_rollout(BUFFER_INIT_SAMPLES, policy.brain)
-    feed_dict = policy.reward_signals[reward_signal_name].prepare_update(
-        policy.model, buffer.make_mini_batch(0, 10), 2
+def reward_signal_update(optimizer, reward_signal_name):
+    buffer = mb.simulate_rollout(BUFFER_INIT_SAMPLES, optimizer.policy.brain)
+    feed_dict = optimizer.reward_signals[reward_signal_name].prepare_update(
+        optimizer.policy, buffer.make_mini_batch(0, 10), 2
     )
-    out = policy._execute_model(
-        feed_dict, policy.reward_signals[reward_signal_name].update_dict
+    out = optimizer.policy._execute_model(
+        feed_dict, optimizer.reward_signals[reward_signal_name].update_dict
     )
     assert type(out) is dict
 
@@ -141,28 +101,37 @@ def reward_signal_update(policy, reward_signal_name):
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_gail_cc(trainer_config, gail_dummy_config):
-    policy = create_policy_mock(trainer_config, gail_dummy_config, False, False, False)
-    reward_signal_eval(policy, "gail")
-    reward_signal_update(policy, "gail")
+    trainer_config.behavioral_cloning = BehavioralCloningSettings(
+        demo_path=CONTINUOUS_PATH
+    )
+    optimizer = create_optimizer_mock(
+        trainer_config, gail_dummy_config, False, False, False
+    )
+    reward_signal_eval(optimizer, "gail")
+    reward_signal_update(optimizer, "gail")
 
 
 @pytest.mark.parametrize(
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_gail_dc_visual(trainer_config, gail_dummy_config):
-    gail_dummy_config["gail"]["demo_path"] = (
-        os.path.dirname(os.path.abspath(__file__)) + "/testdcvis.demo"
+    gail_dummy_config_discrete = {
+        RewardSignalType.GAIL: GAILSettings(demo_path=DISCRETE_PATH)
+    }
+    optimizer = create_optimizer_mock(
+        trainer_config, gail_dummy_config_discrete, False, True, True
     )
-    policy = create_policy_mock(trainer_config, gail_dummy_config, False, True, True)
-    reward_signal_eval(policy, "gail")
-    reward_signal_update(policy, "gail")
+    reward_signal_eval(optimizer, "gail")
+    reward_signal_update(optimizer, "gail")
 
 
 @pytest.mark.parametrize(
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_gail_rnn(trainer_config, gail_dummy_config):
-    policy = create_policy_mock(trainer_config, gail_dummy_config, True, False, False)
+    policy = create_optimizer_mock(
+        trainer_config, gail_dummy_config, True, False, False
+    )
     reward_signal_eval(policy, "gail")
     reward_signal_update(policy, "gail")
 
@@ -171,7 +140,7 @@ def test_gail_rnn(trainer_config, gail_dummy_config):
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_curiosity_cc(trainer_config, curiosity_dummy_config):
-    policy = create_policy_mock(
+    policy = create_optimizer_mock(
         trainer_config, curiosity_dummy_config, False, False, False
     )
     reward_signal_eval(policy, "curiosity")
@@ -182,7 +151,7 @@ def test_curiosity_cc(trainer_config, curiosity_dummy_config):
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_curiosity_dc(trainer_config, curiosity_dummy_config):
-    policy = create_policy_mock(
+    policy = create_optimizer_mock(
         trainer_config, curiosity_dummy_config, False, True, False
     )
     reward_signal_eval(policy, "curiosity")
@@ -193,7 +162,7 @@ def test_curiosity_dc(trainer_config, curiosity_dummy_config):
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_curiosity_visual(trainer_config, curiosity_dummy_config):
-    policy = create_policy_mock(
+    policy = create_optimizer_mock(
         trainer_config, curiosity_dummy_config, False, False, True
     )
     reward_signal_eval(policy, "curiosity")
@@ -204,7 +173,7 @@ def test_curiosity_visual(trainer_config, curiosity_dummy_config):
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
 def test_curiosity_rnn(trainer_config, curiosity_dummy_config):
-    policy = create_policy_mock(
+    policy = create_optimizer_mock(
         trainer_config, curiosity_dummy_config, True, False, False
     )
     reward_signal_eval(policy, "curiosity")
@@ -214,9 +183,9 @@ def test_curiosity_rnn(trainer_config, curiosity_dummy_config):
 @pytest.mark.parametrize(
     "trainer_config", [ppo_dummy_config(), sac_dummy_config()], ids=["ppo", "sac"]
 )
-def test_extrinsic(trainer_config, curiosity_dummy_config):
-    policy = create_policy_mock(
-        trainer_config, curiosity_dummy_config, False, False, False
+def test_extrinsic(trainer_config, extrinsic_dummy_config):
+    policy = create_optimizer_mock(
+        trainer_config, extrinsic_dummy_config, False, False, False
     )
     reward_signal_eval(policy, "extrinsic")
     reward_signal_update(policy, "extrinsic")

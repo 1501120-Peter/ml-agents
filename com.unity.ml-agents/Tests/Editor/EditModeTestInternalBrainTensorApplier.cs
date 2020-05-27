@@ -1,23 +1,15 @@
 using System.Collections.Generic;
 using NUnit.Framework;
-using UnityEngine;
-using System.Reflection;
-using Barracuda;
-using MLAgents.InferenceBrain;
-using System;
+using Unity.Barracuda;
+using Unity.MLAgents.Inference;
+using Unity.MLAgents.Policies;
 
-namespace MLAgents.Tests
+namespace Unity.MLAgents.Tests
 {
     public class EditModeTestInternalBrainTensorApplier
     {
         class TestAgent : Agent
         {
-            public AgentAction GetAction()
-            {
-                var f = typeof(Agent).GetField(
-                    "m_Action", BindingFlags.Instance | BindingFlags.NonPublic);
-                return (AgentAction)f.GetValue(this);
-            }
         }
 
         [Test]
